@@ -32,7 +32,8 @@ type CallLog struct {
 	CallID      string     `gorm:"unique;not null" json:"call_id"`
 	CallerID    uint       `gorm:"not null" json:"caller_id"`
 	CalleeID    uint       `gorm:"not null" json:"callee_id"`
-	Status      string     `gorm:"not null" json:"status"` // missed, answered, rejected, failed
+	CallType    string     `gorm:"default:voice" json:"call_type"` // voice, video
+	Status      string     `gorm:"not null" json:"status"`         // missed, answered, rejected, failed
 	StartedAt   time.Time  `json:"started_at"`
 	AnsweredAt  *time.Time `json:"answered_at"`
 	EndedAt     *time.Time `json:"ended_at"`

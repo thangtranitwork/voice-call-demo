@@ -16,7 +16,7 @@ const (
 	writeWait      = 10 * time.Second
 	pongWait       = 60 * time.Second
 	pingPeriod     = (pongWait * 9) / 10
-	maxMessageSize = 8192
+	maxMessageSize = 65536 // Increased for video SDP payloads
 )
 
 type Client struct {
@@ -25,7 +25,8 @@ type Client struct {
 	UserID         uint
 	send           chan []byte
 	CallLogService *service.CallLogService
-	PeerID         uint // Tracks the current person this client is talking to
+	PeerID         uint   // Tracks the current person this client is talking to
+	CallType       string // "voice" or "video" - tracks current call type
 }
 
 type WSMessage struct {
@@ -44,7 +45,8 @@ func (c *Client) ReadPump() {
 					Type: "call_hangup",
 					From: strconv.FormatUint(uint64(c.UserID), 10),
 				})
-				peer.PeerID = 0 // Reset peer's state too
+				peer.PeerID = 0   // Reset peer's state too
+				peer.CallType = ""
 			}
 		}
 		c.Hub.unregister <- c
@@ -78,26 +80,45 @@ func (c *Client) ReadPump() {
 
 			if targetClient, ok := c.Hub.GetClient(targetID); ok {
 				// Handle Peer state tracking
-				if wsMsg.Type == "call_offer" {
+				switch wsMsg.Type {
+				case "call_offer":
+					// Voice call offer
 					c.PeerID = targetID
+					c.CallType = "voice"
 					targetClient.PeerID = c.UserID
-				} else if wsMsg.Type == "call_hangup" || wsMsg.Type == "call_reject" {
+					targetClient.CallType = "voice"
+				case "video_call_offer":
+					// Video call offer
+					c.PeerID = targetID
+					c.CallType = "video"
+					targetClient.PeerID = c.UserID
+					targetClient.CallType = "video"
+				case "call_hangup", "call_reject":
+					callType := c.CallType
 					c.PeerID = 0
+					c.CallType = ""
 					targetClient.PeerID = 0
+					targetClient.CallType = ""
+
+					// Save call log with proper type
+					if wsMsg.Type == "call_hangup" {
+						c.saveCallLog(targetID, "answered", callType)
+					} else {
+						c.saveCallLog(targetID, "rejected", callType)
+					}
 				}
 
 				msgBytes, _ := json.Marshal(wsMsg)
 				targetClient.send <- msgBytes
-
-				if wsMsg.Type == "call_hangup" {
-					c.saveCallLog(targetID, "answered")
-				}
-				if wsMsg.Type == "call_reject" {
-					c.saveCallLog(targetID, "rejected")
-				}
 			} else {
 				if wsMsg.Type == "call_offer" {
-					c.saveCallLog(targetID, "missed")
+					c.saveCallLog(targetID, "missed", "voice")
+					c.sendJSON(WSMessage{
+						Type: "call_offline",
+						To:   wsMsg.To,
+					})
+				} else if wsMsg.Type == "video_call_offer" {
+					c.saveCallLog(targetID, "missed", "video")
 					c.sendJSON(WSMessage{
 						Type: "call_offline",
 						To:   wsMsg.To,
@@ -115,7 +136,7 @@ func (c *Client) sendJSON(msg WSMessage) {
 	c.send <- bytes
 }
 
-func (c *Client) saveCallLog(calleeID uint, status string) {
+func (c *Client) saveCallLog(calleeID uint, status string, callType string) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("Recovered from panic in saveCallLog: %v", r)
@@ -126,10 +147,15 @@ func (c *Client) saveCallLog(calleeID uint, status string) {
 		return
 	}
 
+	if callType == "" {
+		callType = "voice"
+	}
+
 	logEntry := &model.CallLog{
 		CallID:    uuid.New().String(),
 		CallerID:  c.UserID,
 		CalleeID:  calleeID,
+		CallType:  callType,
 		Status:    status,
 		StartedAt: time.Now(),
 	}

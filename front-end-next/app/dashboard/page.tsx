@@ -5,9 +5,10 @@ import { useAuthStore } from '@/app/store/auth.store';
 import { useWebSocket } from '@/app/hooks/useWebSocket';
 import { useWebRTC } from '@/app/hooks/useWebRTC';
 import api from '@/app/lib/api';
-import { Phone, PhoneOff, Mic, MicOff, User as UserIcon, Search, UserPlus, History, Users, Settings as SettingsIcon } from 'lucide-react';
+import { Phone, PhoneOff, Mic, MicOff, Video, VideoOff, User as UserIcon, Search, UserPlus, History, Users, Settings as SettingsIcon } from 'lucide-react';
 import Settings from '@/app/components/Settings';
 import VoiceVisualizer from '@/app/components/VoiceVisualizer';
+import VideoCall from '@/app/components/VideoCall';
 
 export default function Dashboard() {
   const { user, accessToken, logout } = useAuthStore();
@@ -49,12 +50,19 @@ export default function Dashboard() {
   const onMessage = useCallback((msg: any) => {
     switch (msg.type) {
       case 'call_offer':
-        setCurrentCall({ from: msg.from, offer: msg.payload });
+        setCurrentCall({ from: msg.from, offer: msg.payload, mode: 'voice' });
+        setCallState('ringing');
+        showNotification(msg.from);
+        if (ringtoneRef.current) ringtoneRef.current.play().catch(() => {});
+        break;
+      case 'video_call_offer':
+        setCurrentCall({ from: msg.from, offer: msg.payload, mode: 'video' });
         setCallState('ringing');
         showNotification(msg.from);
         if (ringtoneRef.current) ringtoneRef.current.play().catch(() => {});
         break;
       case 'call_answer':
+      case 'video_call_answer':
         handleAnswer(msg.payload);
         setCallState('connected');
         if (dialtoneRef.current) { dialtoneRef.current.pause(); dialtoneRef.current.currentTime = 0; }
@@ -74,7 +82,7 @@ export default function Dashboard() {
   }, [resetCall]);
 
   const { sendMessage, isConnected } = useWebSocket(onMessage);
-  const { startCall, handleOffer, handleAnswer, handleCandidate, hangup, toggleMute, isMuted, localStream } = useWebRTC(sendMessage);
+  const { startCall, handleOffer, handleAnswer, handleCandidate, hangup, toggleMute, toggleVideo, isMuted, isVideoOff, callMode, localStream } = useWebRTC(sendMessage);
 
   const fetchData = useCallback(async () => {
     try {
@@ -116,15 +124,22 @@ export default function Dashboard() {
   };
 
   const initiateCall = (targetId: number, displayName: string) => {
-    setCurrentCall({ to: targetId, displayName });
+    setCurrentCall({ to: targetId, displayName, mode: 'voice' });
     setCallState('calling');
     if (dialtoneRef.current) dialtoneRef.current.play().catch(() => {});
-    startCall(targetId.toString());
+    startCall(targetId.toString(), 'voice');
+  };
+
+  const initiateVideoCall = (targetId: number, displayName: string) => {
+    setCurrentCall({ to: targetId, displayName, mode: 'video' });
+    setCallState('calling');
+    if (dialtoneRef.current) dialtoneRef.current.play().catch(() => {});
+    startCall(targetId.toString(), 'video');
   };
 
   const acceptCall = () => {
     if (!currentCall) return;
-    handleOffer(currentCall.from, currentCall.offer);
+    handleOffer(currentCall.from, currentCall.offer, currentCall.mode || 'voice');
     setCallState('connected');
     if (ringtoneRef.current) { ringtoneRef.current.pause(); ringtoneRef.current.currentTime = 0; }
   };
@@ -252,13 +267,22 @@ export default function Dashboard() {
                         <div className="text-[10px] text-emerald-500 uppercase tracking-widest font-bold">Available</div>
                       </div>
                     </div>
-                    <button 
-                      onClick={() => initiateCall(c.id, c.display_name)}
-                      disabled={callState !== 'idle'}
-                      className="p-3 bg-blue-600/10 text-blue-500 rounded-xl hover:bg-blue-600 hover:text-white transition-all disabled:opacity-50 shadow-lg shadow-blue-600/5"
-                    >
-                      <Phone size={20} />
-                    </button>
+                    <div className="flex gap-2">
+                      <button 
+                        onClick={() => initiateCall(c.id, c.display_name)}
+                        disabled={callState !== 'idle'}
+                        className="p-3 bg-blue-600/10 text-blue-500 rounded-xl hover:bg-blue-600 hover:text-white transition-all disabled:opacity-50 shadow-lg shadow-blue-600/5"
+                      >
+                        <Phone size={20} />
+                      </button>
+                      <button 
+                        onClick={() => initiateVideoCall(c.id, c.display_name)}
+                        disabled={callState !== 'idle'}
+                        className="p-3 bg-purple-600/10 text-purple-500 rounded-xl hover:bg-purple-600 hover:text-white transition-all disabled:opacity-50 shadow-lg shadow-purple-600/5"
+                      >
+                        <Video size={20} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -355,32 +379,48 @@ export default function Dashboard() {
               </div>
             </div>
           ) : (
-            <div className="text-center w-full max-w-xl bg-slate-900/40 p-12 lg:p-20 rounded-[60px] border border-slate-800/50 backdrop-blur-2xl shadow-2xl relative z-10">
-              <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-24 h-24 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-3xl flex items-center justify-center shadow-2xl rotate-12">
-                <UserIcon size={40} />
-              </div>
-              
-              <div className="mb-12 mt-4">
-                <h3 className="text-4xl font-black mb-4">{currentCall?.displayName || 'In Conversation'}</h3>
-                <div className="flex items-center justify-center gap-3">
-                  <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                  <span className="text-emerald-500 font-black uppercase tracking-[0.4em] text-xs">Secure Link</span>
-                </div>
-              </div>
+            <div className={`text-center w-full ${callMode === 'video' ? 'h-full flex flex-col p-4' : 'max-w-xl bg-slate-900/40 p-12 lg:p-20 rounded-[60px] border border-slate-800/50 backdrop-blur-2xl shadow-2xl relative z-10'}`}>
+              {callMode === 'voice' ? (
+                <>
+                  <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-24 h-24 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-3xl flex items-center justify-center shadow-2xl rotate-12">
+                    <UserIcon size={40} />
+                  </div>
+                  
+                  <div className="mb-12 mt-4">
+                    <h3 className="text-4xl font-black mb-4">{currentCall?.displayName || 'In Conversation'}</h3>
+                    <div className="flex items-center justify-center gap-3">
+                      <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                      <span className="text-emerald-500 font-black uppercase tracking-[0.4em] text-xs">Secure Link</span>
+                    </div>
+                  </div>
 
-              {/* Voice Visualization */}
-              <div className="mb-16 flex flex-col items-center gap-4">
-                <VoiceVisualizer stream={localStream} isActive={callState === 'connected'} />
-                <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Real-time Audio Data</p>
-              </div>
+                  {/* Voice Visualization */}
+                  <div className="mb-16 flex flex-col items-center gap-4">
+                    <VoiceVisualizer stream={localStream} isActive={callState === 'connected'} />
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Real-time Audio Data</p>
+                  </div>
+                </>
+              ) : (
+                <div className="flex-1 relative mb-6">
+                  <VideoCall isActive={callState === 'connected'} localStream={localStream} />
+                </div>
+              )}
               
-              <div className="flex gap-8 justify-center">
+              <div className={`flex gap-8 justify-center ${callMode === 'video' ? 'pb-6' : ''}`}>
                 <button 
                   onClick={toggleMute}
                   className={`p-6 rounded-3xl transition-all shadow-xl active:scale-90 border-b-4 ${isMuted ? 'bg-red-500/20 text-red-500 border-red-900/50' : 'bg-slate-800 text-slate-300 border-slate-950'}`}
                 >
                   {isMuted ? <MicOff size={28} /> : <Mic size={28} />}
                 </button>
+                {callMode === 'video' && (
+                  <button 
+                    onClick={toggleVideo}
+                    className={`p-6 rounded-3xl transition-all shadow-xl active:scale-90 border-b-4 ${isVideoOff ? 'bg-red-500/20 text-red-500 border-red-900/50' : 'bg-slate-800 text-slate-300 border-slate-950'}`}
+                  >
+                    {isVideoOff ? <VideoOff size={28} /> : <Video size={28} />}
+                  </button>
+                )}
                 <button onClick={endCall} className="p-6 bg-red-600 rounded-3xl hover:bg-red-500 hover:scale-105 active:scale-95 transition-all shadow-2xl shadow-red-900/40 border-b-4 border-red-800">
                   <PhoneOff size={28} />
                 </button>
